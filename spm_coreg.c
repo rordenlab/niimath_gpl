@@ -22,7 +22,13 @@ Copyright (C) 1994-2022 Wellcome Centre for Human Neuroimaging
 #include "powell.h"
 
 extern long g_cost_evals;   /* defined in cost.c */
+/* Monotonic seconds for optional SC_PROFILE timing; clock_gettime is POSIX, so fall
+ * back to clock() on Windows/MSVC (which lacks CLOCK_MONOTONIC). */
+#if defined(_WIN32) || !defined(CLOCK_MONOTONIC)
+static double tnow(void){ return (double)clock() / CLOCKS_PER_SEC; }
+#else
 static double tnow(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec+t.tv_nsec*1e-9; }
+#endif
 #define PROF (getenv("SC_PROFILE")!=NULL)
 
 void coreg_default_flags(coreg_flags *f) {
