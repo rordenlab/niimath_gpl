@@ -39,8 +39,8 @@ static void bracket(LineCtx *L, double f0, Pt t[3]) {
     if (t[1].f > t[0].f){ Pt s=t[0]; t[0]=t[1]; t[1]=s; }
     t[2].p=t[1].p+gold*(t[1].p-t[0].p); t[2].f=funeval(L,t[2].p);
     /* cap guards a pathological/monotone objective from expanding without bound;
-     * well-behaved costs bracket in a handful of steps, so this never trips in
-     * the validated path (M6 trajectory unchanged). */
+     * well-behaved costs bracket in a handful of steps, so this never trips on
+     * the validated images (optimizer trajectory unchanged vs. the SPM reference). */
     for (int guard=0; t[1].f > t[2].f && guard < 200; guard++) {
         double u[3]={t[0].p-t[1].p, 0.0, t[2].p-t[1].p};
         double y[3]={t[0].f, t[1].f, t[2].f}, pol[3];

@@ -134,7 +134,7 @@ int base_samples_build(const Vol *VG, double samp, BaseSamples *bs) {
     bs->rz=malloc(sizeof(float)*n); bs->ivg=malloc(n);
     if(!bs->rx||!bs->ry||!bs->rz||!bs->ivg){ base_samples_free(bs); return 1; }
     /* Pass 2: fill. Identical loop + iran reset -> identical samples to the
-     * original single-pass coreg_hist2 (validated bit-identical in the M4 gate). */
+     * original single-pass coreg_hist2 (validated bit-identical against it). */
     long k=0; int iran=0;
     for (float z=1.0f; z<=dg[2]-s[2]; z+=s0[2])
     for (float y=1.0f; y< dg[1]-s[1]; y+=s0[1])

@@ -175,7 +175,7 @@ int main(void){
     /* Gate: solutions are operationally identical -- agree to well under a voxel
        and under the optimizer's own rotation tol (0.001 rad ~= 0.057 deg), and
        both sit at the same shallow NMI minimum (costs agree to ~1e-6). The tiny
-       residual is non-reproducible pinv/SVD line-search path divergence (see M6),
+       residual is non-reproducible pinv/SVD line-search path divergence,
        not a porting error. */
     assert(dtr<0.1 && drot<0.12);
     assert(fabs(cC-cS)<1e-4);
