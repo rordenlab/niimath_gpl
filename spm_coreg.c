@@ -16,12 +16,21 @@ Copyright (C) 1994-2022 Wellcome Centre for Human Neuroimaging
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <setjmp.h>
 #include "spm_coreg.h"
 #include "loaduint8.h"
 #include "smooth.h"
 #include "powell.h"
+#include "xalloc.h"   /* SC_TLOCAL + the extern decls these definitions back */
 
 extern long g_cost_evals;   /* defined in cost.c */
+
+/* OOM bail target for the xmalloc/xcalloc scratch allocators (see xalloc.h).
+ * Armed only inside coreg_run() so deep allocation failures unwind to an error
+ * return rather than exit(1) — needed for the long-lived WASM worker. Thread-local
+ * (SC_TLOCAL) so a per-thread native embedding longjmps to its own caller. */
+SC_TLOCAL jmp_buf spmcoreg_oom_jmp;
+SC_TLOCAL int spmcoreg_oom_armed = 0;
 /* Monotonic seconds for optional SC_PROFILE timing; clock_gettime is POSIX, so fall
  * back to clock() on Windows/MSVC (which lacks CLOCK_MONOTONIC). */
 #if defined(_WIN32) || !defined(CLOCK_MONOTONIC)
@@ -68,7 +77,7 @@ int coreg_validate_flags(const coreg_flags *f) {
 
 /* Core estimate on two already-loaded uint8 Vols (VG=stationary/ref, VF=moving/src);
  * consumes (frees) both. Shared by the file and in-memory entry points. */
-static int coreg_run(Vol *VGp, Vol *VFp, const coreg_flags *f, double xk[6]) {
+static int coreg_run_inner(Vol *VGp, Vol *VFp, const coreg_flags *f, double xk[6]) {
     Vol VG=*VGp, VF=*VFp;
     double t0=tnow();
     /* smooth each to the finest sampling step: fwhm = sqrt(max(sep_end^2 - vox^2,0))/vox */
@@ -120,6 +129,24 @@ static int coreg_run(Vol *VGp, Vol *VFp, const coreg_flags *f, double xk[6]) {
     if (PROF) fprintf(stderr,"  [prof] smooth=%.3fs  total_evals=%ld\n",t_smooth,g_cost_evals);
     vol_free(&VG); vol_free(&VF);
     return 0;
+}
+
+/* Guard wrapper: arm the OOM longjmp target around the inner run so a scratch
+ * allocation failure (xmalloc/xcalloc in cost/smooth/powell) returns an error
+ * instead of exit(1). On the OOM path, scratch allocated before the failure
+ * (including the two loaded uint8 volumes) leaks — acceptable on an unrecoverable
+ * bail that immediately returns an error. ponytail: leak-on-OOM beats threading
+ * NULL through cost/smooth/powell.
+ * The guard is thread-local (SC_TLOCAL), so concurrent per-thread coreg runs are
+ * safe; it is NOT reentrant within a single thread, but coreg_run never recurses,
+ * so the single arm/disarm pair holds. Embedding constraint: do not call back into
+ * coreg_run from a cost callback. */
+static int coreg_run(Vol *VGp, Vol *VFp, const coreg_flags *f, double xk[6]) {
+    if (setjmp(spmcoreg_oom_jmp)) { spmcoreg_oom_armed = 0; return 1; }
+    spmcoreg_oom_armed = 1;
+    int rc = coreg_run_inner(VGp, VFp, f, xk);
+    spmcoreg_oom_armed = 0;
+    return rc;
 }
 
 int coreg_estimate(const char *ref, const char *src, const coreg_flags *f, double xk[6]) {
