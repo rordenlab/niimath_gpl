@@ -21,6 +21,7 @@ typedef struct {
     int Nr, Nc;                    /* smoothed-histogram dims */
     double krn1[64], krn2[64];     /* normalized separable smoothing kernels */
     int L1, L2;                    /* kernel lengths */
+    Hist2Scratch hs;               /* per-pass thread buffer for the parallel histogram build */
 } CostScratch;
 int  cost_scratch_init(CostScratch *cs, const double fwhm[2]);
 void cost_scratch_free(CostScratch *cs);

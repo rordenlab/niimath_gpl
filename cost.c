@@ -7,6 +7,9 @@
 #include "cost.h"
 #include "hist2.h"
 #include "smooth.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 int cost_parse(const char *s, cost_fun_t *out) {
     if (!strcmp(s,"mi"))  {*out=COST_MI;  return 0;}
@@ -40,12 +43,14 @@ int cost_scratch_init(CostScratch *cs, const double fwhm[2]) {
     cs->out = xmalloc((size_t)cs->Nr*cs->Nc*sizeof(double));
     cs->s1  = xmalloc((size_t)cs->Nc*sizeof(double));
     cs->s2  = xmalloc((size_t)cs->Nr*sizeof(double));
+    hist2_scratch_init(&cs->hs);   /* non-fatal: degrades to serial histogram on failure */
     return 0;
 }
 void cost_scratch_free(CostScratch *cs) {
     if(!cs) return;
     free(cs->tmp); free(cs->out); free(cs->s1); free(cs->s2);
     cs->tmp=cs->out=cs->s1=cs->s2=NULL;
+    hist2_scratch_free(&cs->hs);
 }
 
 /* Smooth H (256x256) by conv2 with the precomputed separable kernels in cs,
@@ -55,7 +60,14 @@ static void smooth_hist_into(const double H[65536], CostScratch *cs) {
     int Nc=cs->Nc, Nr=cs->Nr, L1=cs->L1, L2=cs->L2;
     const double *krn1=cs->krn1, *krn2=cs->krn2;
     double *tmp=cs->tmp, *out=cs->out;
+    /* Each output cell is an independent convolution sum computed in fixed order,
+     * so parallelizing the outer loop is bit-identical to serial (a map, not a
+     * reduction — unlike the cost's log2 sums, this does NOT perturb the SPM
+     * match). The pragma is a no-op without -fopenmp; the if-clause keeps it
+     * serial when only one thread is available. Two regions: pass 2 reads tmp,
+     * so the implicit barrier at the end of pass 1 is required. */
     /* conv2 full along dim2 (g): tmp is 256 x Nc (column-major: tmp[f + c*256]) */
+    #pragma omp parallel for schedule(static) num_threads(cs->hs.nt) if(cs->hs.nt > 1)
     for (int f=0; f<256; f++)
         for (int n=0; n<Nc; n++) {
             double acc=0.0;
@@ -65,6 +77,7 @@ static void smooth_hist_into(const double H[65536], CostScratch *cs) {
             tmp[f + n*256] = acc;
         }
     /* conv2 full along dim1 (f): out is Nr x Nc (column-major: out[m + c*Nr]) */
+    #pragma omp parallel for schedule(static) num_threads(cs->hs.nt) if(cs->hs.nt > 1)
     for (int n=0; n<Nc; n++)
         for (int m=0; m<Nr; m++) {
             double acc=0.0;
@@ -153,7 +166,7 @@ double coreg_cost_cached(const BaseSamples *base, const Vol *VF, const double *P
                          cost_fun_t cf, const double fwhm[2], CostScratch *cs) {
     g_cost_evals++;
     double H[65536];
-    coreg_hist2_cached(base, VF, P, np, H);
+    coreg_hist2_cached(base, VF, P, np, H, &cs->hs);
     return cost_from_H_scratch(H, cf, fwhm, cs);   /* hot path: no per-eval allocation */
 }
 

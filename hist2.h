@@ -27,7 +27,18 @@ typedef struct {
 
 int  base_samples_build(const Vol *VG, double samp, BaseSamples *bs); /* 0 ok */
 void base_samples_free(BaseSamples *bs);
+
+/* Per-pass reusable thread buffer for the parallel histogram build. Allocated
+ * once per pass (rides on CostScratch), reused across all evals so the hot path
+ * never allocates. nt<=1 / buf==NULL (always so on non-OpenMP/WASM) => the
+ * cached builder takes its serial fallback. */
+typedef struct { double *buf; int nt; } Hist2Scratch;
+int  hist2_scratch_init(Hist2Scratch *hs);   /* 0 ok (also ok = serial: buf=NULL,nt=1) */
+void hist2_scratch_free(Hist2Scratch *hs);
+
+/* hs may be NULL (serial). When non-NULL with hs->nt>1 and a large sample count,
+ * the build is parallelized across hs->nt threads using hs->buf. */
 void coreg_hist2_cached(const BaseSamples *bs, const Vol *VF, const double *P, int np,
-                        double H[65536]);
+                        double H[65536], Hist2Scratch *hs);
 
 #endif

@@ -3,8 +3,12 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "hist2.h"
 #include "matrix.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* trilinear sample of uint8 volume of dims d at (x,y,z) [1-based, float] */
 static float samp_vol(const int d[3], const unsigned char *f, float x, float y, float z) {
@@ -157,16 +161,11 @@ void base_samples_free(BaseSamples *bs){
     bs->rx=bs->ry=bs->rz=NULL; bs->ivg=NULL; bs->n=0;
 }
 
-void coreg_hist2_cached(const BaseSamples *bs, const Vol *VF, const double *P, int np,
-                        double H[65536]) {
-    double A[4][4], VFi[4][4], tmp[4][4], M[4][4];
-    spm_matrix(P, np, A);
-    if (mat44_inv(VF->mat, VFi)) { memset(H,0,65536*sizeof(double)); return; }
-    mat44_mul(VFi, A, tmp); mat44_mul(tmp, bs->mat, M);
-    int df[3]={VF->nx,VF->ny,VF->nz};
-    const unsigned char *f=VF->u8;
-    memset(H,0,65536*sizeof(double));
-    for (long i=0;i<bs->n;i++) {
+/* Accumulate samples [lo,hi) into Hdst. Shared by the serial path and each
+ * OpenMP thread (which owns a private Hdst chunk-buffer). */
+static void hist2_accum(const BaseSamples *bs, const unsigned char *f, const int df[3],
+                        const double M[4][4], long lo, long hi, double *Hdst) {
+    for (long i=lo;i<hi;i++) {
         float rx=bs->rx[i], ry=bs->ry[i], rz=bs->rz[i];
         float xp = (float)(M[0][0]*rx + M[0][1]*ry + M[0][2]*rz + M[0][3]);
         float yp = (float)(M[1][0]*rx + M[1][1]*ry + M[1][2]*rz + M[1][3]);
@@ -175,10 +174,81 @@ void coreg_hist2_cached(const BaseSamples *bs, const Vol *VF, const double *P, i
             float vf = samp_vol(df, f, xp,yp,zp);
             int ivf = (int)floorf(vf);
             int ivg = bs->ivg[i];
-            H[ivf+ivg*256] += (1-(vf-ivf));
-            if (ivf<255) H[ivf+1+ivg*256] += (vf-ivf);
+            Hdst[ivf+ivg*256] += (1-(vf-ivf));
+            if (ivf<255) Hdst[ivf+1+ivg*256] += (vf-ivf);
         }
     }
+}
+
+/* Per-pass thread-buffer for the parallel build. On non-OpenMP builds nt is
+ * forced to 1 and nothing is allocated (serial fallback, bit-identical to the
+ * pre-OpenMP code). A malloc failure also degrades to serial rather than
+ * failing the pass — the registration still runs single-threaded. */
+int hist2_scratch_init(Hist2Scratch *hs) {
+    hs->buf = NULL; hs->nt = 1;
+#ifdef _OPENMP
+    int nt = omp_get_max_threads();
+    if (nt > 1) {
+        hs->buf = malloc((size_t)nt*65536*sizeof(double));   /* zeroed per-slice each eval */
+        if (hs->buf) hs->nt = nt;   /* else stay serial (nt=1, buf=NULL) */
+    }
+#endif
+    return 0;
+}
+void hist2_scratch_free(Hist2Scratch *hs) {
+    if (!hs) return;
+    free(hs->buf); hs->buf = NULL; hs->nt = 1;
+}
+
+void coreg_hist2_cached(const BaseSamples *bs, const Vol *VF, const double *P, int np,
+                        double H[65536], Hist2Scratch *hs) {
+    double A[4][4], VFi[4][4], tmp[4][4], M[4][4];
+    spm_matrix(P, np, A);
+    if (mat44_inv(VF->mat, VFi)) { memset(H,0,65536*sizeof(double)); return; }
+    mat44_mul(VFi, A, tmp); mat44_mul(tmp, bs->mat, M);
+    int df[3]={VF->nx,VF->ny,VF->nz};
+    const unsigned char *f=VF->u8;
+    memset(H,0,65536*sizeof(double));
+#ifdef _OPENMP
+    /* Parallelize only when the sample count pays for thread setup (mirrors
+     * allineate's >100000 guard). Each thread owns a contiguous static chunk
+     * and a private 512 KB histogram slice (in the per-pass hs->buf — no
+     * per-eval allocation), zeroing only its own slice, then we reduce in fixed
+     * thread order.
+     *
+     * CRITICAL: chunk by the ACTUAL team size (omp_get_num_threads()), NOT the
+     * requested hs->nt. num_threads(nt) is only an upper bound — the runtime may
+     * launch fewer (OMP_THREAD_LIMIT, OMP_DYNAMIC, resource limits). Thread IDs
+     * are then 0..actual-1; chunking by the requested nt would leave the chunks
+     * for the unlaunched IDs unprocessed -> silently dropped samples. Chunking by
+     * the actual team size makes IDs 0..nteam-1 tile [0,bs->n) exactly, and the
+     * reduction runs over `got` (the actual size), so no stale/unwritten slice is
+     * summed. Buffer safety: slice index t < nteam <= num_threads(nt) cap == the
+     * hs->nt the buffer was sized for, so t is always in bounds.
+     *
+     * Deterministic for a given ACTUAL team size (fixed chunks + fixed reduction
+     * order); float add order differs from serial and across team sizes, but stays
+     * within the SPM golden tolerance (the histogram feeds a smoothed cost). */
+    if (hs && hs->buf && hs->nt > 1 && bs->n > 100000) {
+        int got = 1;
+        #pragma omp parallel num_threads(hs->nt)
+        {
+            int nteam = omp_get_num_threads();      /* ACTUAL team size, may be < hs->nt */
+            int t = omp_get_thread_num();
+            if (t == 0) got = nteam;                /* publish once; region-end barrier makes it visible */
+            double *Hl = hs->buf + (size_t)t*65536;
+            memset(Hl, 0, 65536*sizeof(double));    /* each thread zeroes its OWN slice */
+            long lo = bs->n * (long long)t     / nteam;   /* wide intermediate: bs->n*t can exceed 32-bit long (Windows LLP64) */
+            long hi = bs->n * (long long)(t+1) / nteam;
+            hist2_accum(bs, f, df, M, lo, hi, Hl);
+        }
+        for (int t=0;t<got;t++){ const double *Hl=hs->buf+(size_t)t*65536;
+            for (int k=0;k<65536;k++) H[k]+=Hl[k]; }
+        return;
+    }
+#endif
+    (void)hs;
+    hist2_accum(bs, f, df, M, 0, bs->n, H);
 }
 
 #ifdef HIST2_TEST
@@ -216,7 +286,7 @@ int main(void){
         for(int t=0;t<5;t++){
             double Ho[65536],Hc[65536];
             coreg_hist2(&VG,&VF,Ptest[t],6,samp,Ho);
-            coreg_hist2_cached(&bs,&VF,Ptest[t],6,Hc);
+            coreg_hist2_cached(&bs,&VF,Ptest[t],6,Hc,NULL);   /* NULL hs: serial, bit-identical */
             for(int i=0;i<65536;i++){ double d=fabs(Ho[i]-Hc[i]); if(d>wcache)wcache=d; }
         }
         base_samples_free(&bs);
