@@ -234,6 +234,14 @@ int nii_spm_deface(nifti_image *nim, int *ac, int argc, char *argv[], int dt_dou
     /* Defacing zeros face voxels in-place (float32 mask warp + apply), so it needs
      * allineate and is incompatible with -dt double (main64 expects double). */
     if (dt_double) { fprintf(stderr, "-spm_deface requires -dt float (not -dt double)\n"); return 1; }
+    /* Reject a 4D subject up front with a correctly-labeled message. (coreg uses
+     * the subject as its "ref", so without this it would later fail as "ref: 4D...",
+     * confusing for a -spm_deface user whose input is the subject.) The face mask
+     * covers a single volume, so 4D would leave faces in volumes 2..N — fail closed. */
+    if ((size_t)nim->nx * nim->ny * nim->nz != (size_t)nim->nvox) {
+        fprintf(stderr, "-spm_deface: subject (input) must be a single 3D volume (4D/multi-volume not supported)\n");
+        return 1;
+    }
 #ifndef HAVE_ALLINEATE
     (void)tmplf; (void)maskf; (void)nn;
     fprintf(stderr, "-spm_deface requires the allineate module (build without AL=0)\n");
