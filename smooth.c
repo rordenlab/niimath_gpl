@@ -5,6 +5,9 @@
 #include "xalloc.h"
 #include "smooth.h"
 #include "precision.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 int spm_smoothkern(double fwhm, double *krn, int t) {
     int lim = (int)ceil(2*fwhm);
@@ -29,6 +32,33 @@ int spm_smoothkern(double fwhm, double *krn, int t) {
     return n;
 }
 
+#ifdef _OPENMP
+static void conv_axis_parallel(const sflt *in, sflt *out, int nx,int ny,int nz,
+                               int axis, const double *krn, int klen, int koff, int renorm,
+                               int L, int stride, int n_a, long nlines, int nt) {
+    sflt *buffs = xmalloc(sizeof(sflt)*(size_t)L*(size_t)nt);
+    #pragma omp parallel for schedule(static)
+    for (long line=0; line<nlines; line++) {
+        int b = (int)(line / n_a);
+        int a = (int)(line - (long)b*n_a);
+        sflt *buff = buffs + (size_t)omp_get_thread_num()*(size_t)L;
+        long base;
+        if (axis==0)      base = (long)a*nx + (long)b*nx*ny;       /* a=y,b=z */
+        else if (axis==1) base = a + (long)b*nx*ny;                /* a=x,b=z */
+        else              base = a + (long)b*nx;                   /* a=x,b=y */
+        for (int o=0;o<L;o++) buff[o]=in[base+(long)o*stride];
+        for (int o=0;o<L;o++) {
+            int fstart = ((o-koff >= L) ? o-L-koff+1 : 0);
+            int fend   = ((o-(koff+klen) < 0) ? o-koff+1 : klen);
+            double sum1=0.0, sum2=0.0;
+            for (int k=fstart;k<fend;k++){ sum1 += buff[o-koff-k]*krn[k]; if(renorm) sum2+=krn[k]; }
+            out[base+(long)o*stride] = renorm ? (sum2!=0.0 ? sum1/sum2 : 0.0) : sum1;
+        }
+    }
+    free(buffs);
+}
+#endif
+
 /* 1D conv along one axis, replicating spm_conv_vol's convxy(x,y; renorm=0)
  * and convxyz z-pass (renorm=1). koff = -lim. */
 static void conv_axis(const sflt *in, sflt *out, int nx,int ny,int nz,
@@ -37,6 +67,14 @@ static void conv_axis(const sflt *in, sflt *out, int nx,int ny,int nz,
     int stride = (axis==0)?1 : (axis==1)?nx : nx*ny;
     int n_a = (axis==0)?ny:nx;        /* outer dims to iterate */
     int n_b = (axis==2)?ny:nz;
+#ifdef _OPENMP
+    int nt = omp_get_max_threads();
+    long nlines = (long)n_a*n_b;
+    if (nt > 1 && nlines > 64) {
+        conv_axis_parallel(in,out,nx,ny,nz,axis,krn,klen,koff,renorm,L,stride,n_a,nlines,nt);
+        return;
+    }
+#endif
     sflt *buff = xmalloc(sizeof(sflt)*L);
     for (int b=0;b<n_b;b++) {
         for (int a=0;a<n_a;a++) {

@@ -12,7 +12,9 @@
 
 /* trilinear sample of uint8 volume of dims d at (x,y,z) [1-based, float] */
 static float samp_vol(const int d[3], const unsigned char *f, float x, float y, float z) {
-    int ix=(int)floorf(x), iy=(int)floorf(y), iz=(int)floorf(z);
+    /* All callers pass finite positive 1-based coordinates, so truncation is
+     * equivalent to floorf() without the libm conversion overhead. */
+    int ix=(int)x, iy=(int)y, iz=(int)z;
     float dx1=x-ix, dx2=1.0f-dx1;
     float dy1=y-iy, dy2=1.0f-dy1;
     float dz1=z-iz, dz2=1.0f-dz1;
@@ -72,8 +74,8 @@ void coreg_hist2(const Vol *VG, const Vol *VF, const double *P, int np,
         float zp = (float)(M[2][0]*rx + M[2][1]*ry + M[2][2]*rz + M[2][3]);
         if (zp>=1.0f && zp<=df[2] && yp>=1.0f && yp<df[1] && xp>=1.0f && xp<df[0]) {
             float vf = samp_vol(df, f, xp,yp,zp);
-            int ivf = (int)floorf(vf);
-            int ivg = (int)floorf(samp_vol(dg, g, rx,ry,rz)+0.5f);
+            int ivf = (int)vf;
+            int ivg = (int)(samp_vol(dg, g, rx,ry,rz)+0.5f);
             H[ivf+ivg*256] += (1-(vf-ivf));
             if (ivf<255) H[ivf+1+ivg*256] += (vf-ivf);
         }
@@ -106,7 +108,7 @@ void coreg_hist2_fullpv(const Vol *VG, const Vol *VF, const double *P, int np,
         if (zp>=1.0f && zp<=df[2] && yp>=1.0f && yp<df[1] && xp>=1.0f && xp<df[0]) {
             float vf = samp_vol(df, f, xp,yp,zp);
             float vg = samp_vol(dg, g, rx,ry,rz);
-            int ivf=(int)floorf(vf), ivg=(int)floorf(vg);
+            int ivf=(int)vf, ivg=(int)vg;
             float df_=vf-ivf, dg_=vg-ivg;
             H[ivf+ivg*256] += (1-df_)*(1-dg_);
             if (ivf<255) H[ivf+1+ivg*256] += df_*(1-dg_);
@@ -147,7 +149,7 @@ int base_samples_build(const Vol *VG, double samp, BaseSamples *bs) {
         float ry = y + ran[iran=(iran+1)%97]*s[1];
         float rz = z + ran[iran=(iran+1)%97]*s[2];
         bs->rx[k]=rx; bs->ry[k]=ry; bs->rz[k]=rz;
-        bs->ivg[k]=(unsigned char)(int)floorf(samp_vol(dg,g,rx,ry,rz)+0.5f);
+        bs->ivg[k]=(unsigned char)(int)(samp_vol(dg,g,rx,ry,rz)+0.5f);
         k++;
     }
     bs->n=k;
@@ -172,7 +174,7 @@ static void hist2_accum(const BaseSamples *bs, const unsigned char *f, const int
         float zp = (float)(M[2][0]*rx + M[2][1]*ry + M[2][2]*rz + M[2][3]);
         if (zp>=1.0f && zp<=df[2] && yp>=1.0f && yp<df[1] && xp>=1.0f && xp<df[0]) {
             float vf = samp_vol(df, f, xp,yp,zp);
-            int ivf = (int)floorf(vf);
+            int ivf = (int)vf;
             int ivg = bs->ivg[i];
             Hdst[ivf+ivg*256] += (1-(vf-ivf));
             if (ivf<255) Hdst[ivf+1+ivg*256] += (vf-ivf);
