@@ -52,7 +52,7 @@ static int parse_bit(const char *s, int *out) {
 
 /* Handle one estimate sub-option token `o` (already past the leading "-"), grabbing
  * any value and advancing *ac. Returns 1 if consumed, 0 if `o` is not an estimate
- * option, -1 on a parse error (message already printed). Shared by -spmcoreg and
+ * option, -1 on a parse error (message already printed). Shared by -spm_coreg and
  * -spm_deface. */
 static int coreg_opt(const char *o, int *ac, int argc, char *argv[], coreg_flags *f, int *verbose) {
     if (!strcmp(o, "-cost")) {
@@ -102,8 +102,8 @@ static int spm_build_gam(const nifti_image *sample_from, const nifti_image *grid
 
 int nii_spmcoreg(nifti_image *nim, char *fin, int *ac, int argc, char *argv[], int dt_double) {
     (void)fin;
-    /* argv[*ac] == "-spmcoreg"; next token is the (required) reference image. */
-    if (*ac + 1 >= argc) { fprintf(stderr, "-spmcoreg requires a reference image argument\n"); return 1; }
+    /* argv[*ac] == "-spm_coreg"; next token is the (required) reference image. */
+    if (*ac + 1 >= argc) { fprintf(stderr, "-spm_coreg requires a reference image argument\n"); return 1; }
     (*ac)++;
     const char *ref = argv[*ac];
 
@@ -142,19 +142,19 @@ int nii_spmcoreg(nifti_image *nim, char *fin, int *ac, int argc, char *argv[], i
      * the (costly) estimate so the error is immediate. */
     if (!estimate) {
 #ifndef HAVE_ALLINEATE
-        fprintf(stderr, "-spmcoreg reslice requires the allineate module (built without AL=0); use -estimate\n");
+        fprintf(stderr, "-spm_coreg reslice requires the allineate module (built without AL=0); use -estimate\n");
         return 1;
 #endif
         if (dt_double) {
-            fprintf(stderr, "-spmcoreg reslice requires -dt float (not -dt double); use -estimate for header-only\n");
+            fprintf(stderr, "-spm_coreg reslice requires -dt float (not -dt double); use -estimate for header-only\n");
             return 1;
         }
     }
     nifti_image *refnim = nifti_image_read(ref, 1);
-    if (!refnim) { fprintf(stderr, "-spmcoreg: cannot read reference %s\n", ref); return 1; }
+    if (!refnim) { fprintf(stderr, "-spm_coreg: cannot read reference %s\n", ref); return 1; }
     double xk[6];
     int rc = coreg_estimate_nim(refnim, nim, &f, xk);   /* ref=stationary, nim=moving */
-    if (rc) { fprintf(stderr, "-spmcoreg: estimate failed\n"); nifti_image_free(refnim); return 1; }
+    if (rc) { fprintf(stderr, "-spm_coreg: estimate failed\n"); nifti_image_free(refnim); return 1; }
 
     if (verbose) {
         printf("params  %.6f %.6f %.6f  %.6f %.6f %.6f\n", xk[0], xk[1], xk[2], xk[3], xk[4], xk[5]);
@@ -168,10 +168,10 @@ int nii_spmcoreg(nifti_image *nim, char *fin, int *ac, int argc, char *argv[], i
     if (estimate) {
         double A[4][4], Ainv[4][4];
         spm_matrix(xk, 6, A);
-        if (mat44_inv(A, Ainv)) { fprintf(stderr, "-spmcoreg: singular transform\n"); nifti_image_free(refnim); return 1; }
+        if (mat44_inv(A, Ainv)) { fprintf(stderr, "-spm_coreg: singular transform\n"); nifti_image_free(refnim); return 1; }
         nifti_image_free(refnim);
         if (nim->sform_code <= 0 && nim->qform_code <= 0) {
-            fprintf(stderr, "-spmcoreg -estimate: source has no sform/qform to update\n"); return 1; }
+            fprintf(stderr, "-spm_coreg -estimate: source has no sform/qform to update\n"); return 1; }
         if (nim->sform_code > 0) {
             nim->sto_xyz = premul(Ainv, nim->sto_xyz);
             nim->sto_ijk = nifti_dmat44_inverse(nim->sto_xyz);
@@ -192,12 +192,12 @@ int nii_spmcoreg(nifti_image *nim, char *fin, int *ac, int argc, char *argv[], i
      * -dt double cases were rejected before the estimate above.) */
 #ifdef HAVE_ALLINEATE
     mat44 gam;
-    if (spm_build_gam(nim, refnim, xk, &gam, "-spmcoreg")) { nifti_image_free(refnim); return 1; }
+    if (spm_build_gam(nim, refnim, xk, &gam, "-spm_coreg")) { nifti_image_free(refnim); return 1; }
     int interp = nn ? AL_INTERP_NN : AL_INTERP_LINEAR;
     float fillv = fill_zero ? 0.0f : (float)NAN;
     rc = nii_reslice_affine(nim, refnim, gam, interp, fillv);
     nifti_image_free(refnim);
-    if (rc) { fprintf(stderr, "-spmcoreg: reslice failed\n"); return 1; }
+    if (rc) { fprintf(stderr, "-spm_coreg: reslice failed\n"); return 1; }
     return 0;
 #else
     (void)nn; (void)fill_zero;   /* unreachable: rejected before the estimate */

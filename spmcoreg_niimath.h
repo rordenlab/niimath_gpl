@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-/* `-spmcoreg ref [opts]` chain op. argv[*ac] is the "-spmcoreg" token on entry;
+/* `-spm_coreg ref [opts]` chain op. argv[*ac] is the "-spm_coreg" token on entry;
  * parses `ref` + sub-options and advances *ac past everything consumed. Registers
  * the in-memory `nim` (moving) to `ref` (stationary): reslices onto the ref grid by
  * default, or rewrites nim's sform/qform with `-estimate`. `fin` is the source path
